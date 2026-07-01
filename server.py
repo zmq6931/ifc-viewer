@@ -274,5 +274,6 @@ class H(http.server.SimpleHTTPRequestHandler):
         else:self.send_error(404)
 
 if __name__=="__main__":
-    print("IFC Viewer running at http://localhost:8080")
-    http.server.HTTPServer(("0.0.0.0",8080),H).serve_forever()
+    port = int(sys.argv[1]) if len(sys.argv)>1 else 8080
+    print(f"IFC Viewer running at http://localhost:{port}")
+    http.server.HTTPServer(("0.0.0.0",port),H).serve_forever()
