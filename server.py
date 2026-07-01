@@ -42,10 +42,12 @@ body{font-family:system-ui,sans-serif;overflow:hidden;background:#1a1a2e}
 <button id="btn">Open IFC File</button>
 <input type="file" id="f" accept=".ifc">
 <span id="s">Ready</span>
+<button id="exp" style="display:none;padding:8px 16px;background:rgba(34,197,94,0.2);color:#22c55e;border:1px solid rgba(34,197,94,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Export XLSX</button>
 </div>
 <div id="tip">Wheel: zoom | Left drag: rotate | Right drag: pan | Click: select</div>
 <div id="catPanel"></div>
 <div id="panel"></div>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script type="importmap">
 {"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
 </script>
@@ -55,8 +57,9 @@ import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
 
 const E=id=>document.getElementById(id);
-const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel");
+const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel"),exp=E("exp");
 btn.onclick=()=>fi.click();
+exp.onclick=()=>{if(!window._ifcProps||!window._ifcProps.length)return;const keys=["Type","GlobalId","Name"];const extra=new Set();window._ifcProps.forEach(p=>Object.keys(p).forEach(k=>{if(k!=="Type"&&k!=="GlobalId"&&k!=="Name")extra.add(k)}));keys.push(...[...extra].sort());const rows=[keys];window._ifcProps.forEach(p=>rows.push(keys.map(k=>p[k]||"")));const ws=XLSX.utils.aoa_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"IFC Properties");XLSX.writeFile(wb,"ifc_properties.xlsx");};
 
 const sc=new THREE.Scene();sc.background=new THREE.Color("#1a1a2e");
 const cam=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.001,1e9);
@@ -156,7 +159,7 @@ ctrl.target.set(0,0,0);
 cam.position.set(d*2, d*1.5, d*2);ctrl.update();
 grid.position.set(0,box.min.y-0.5,0);
 grid.scale.set(Math.max(d*1.5,20)/20,1,Math.max(d*1.5,20)/20);
-s.textContent=mg.children.length+" elements";buildCategories();
+s.textContent=mg.children.length+" elements";buildCategories();exp.style.display="inline-block";
 },undefined,(err)=>{s.textContent="Load error: "+err;});
 }catch(e){s.textContent="Error: "+e.message;}
 };
