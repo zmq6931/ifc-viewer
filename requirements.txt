@@ -1,0 +1,4 @@
+ifcopenshell>=0.8.5
+trimesh>=4.12.2
+numpy>=2.0.0
+ezdxf>=1.4.0
