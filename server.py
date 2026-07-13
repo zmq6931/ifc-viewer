@@ -43,6 +43,7 @@ body{font-family:system-ui,sans-serif;overflow:hidden;background:#1a1a2e}
 <input type="file" id="f" accept=".ifc">
 <span id="s">Ready</span>
 <button id="exp" style="display:none;padding:8px 16px;background:rgba(34,197,94,0.2);color:#22c55e;border:1px solid rgba(34,197,94,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Export XLSX</button>
+<button id="sec" style="display:none;padding:8px 16px;background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Section</button>
 </div>
 <div id="tip">Wheel: zoom | Left drag: rotate | Right drag: pan | Click: select</div>
 <div id="catPanel"></div>
@@ -57,9 +58,31 @@ import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
 
 const E=id=>document.getElementById(id);
-const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel"),exp=E("exp");
+const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel"),exp=E("exp"),sec=E("sec");
 btn.onclick=()=>fi.click();
 exp.onclick=()=>{if(!window._ifcProps||!window._ifcProps.length)return;const keys=["Type","GlobalId","Name"];const extra=new Set();window._ifcProps.forEach(p=>Object.keys(p).forEach(k=>{if(k!=="Type"&&k!=="GlobalId"&&k!=="Name")extra.add(k)}));keys.push(...[...extra].sort());const rows=[keys];window._ifcProps.forEach(p=>rows.push(keys.map(k=>p[k]||"")));const ws=XLSX.utils.aoa_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"IFC Properties");XLSX.writeFile(wb,"ifc_properties.xlsx");};
+let secMode="off",clipPlane=null,visPlane=null,secDrag=false,secLastY=0;
+sec.onclick=()=>{if(secMode==="off"){secMode="pick";sec.style.background="rgba(239,68,68,0.5)";sec.style.color="#fca5a5";s.textContent="Click a face to set section plane"}else removeSec()};
+function createSec(normal,point){
+removeSec();
+clipPlane=new THREE.Plane(normal.clone().negate(),point.dot(normal));
+r.clippingPlanes=[clipPlane];
+mg.traverse(c=>{if(c.material){const mats=Array.isArray(c.material)?c.material:[c.material];mats.forEach(m=>{m.side=THREE.DoubleSide;m.needsUpdate=true})}});
+const box=new THREE.Box3().setFromObject(mg);const s2=box.getSize(new THREE.Vector3());const sz=Math.max(s2.x,s2.y,s2.z)*1.1;
+const pg=new THREE.PlaneGeometry(sz,sz);const pm=new THREE.MeshBasicMaterial({color:0xff4444,side:THREE.DoubleSide,transparent:true,opacity:0.2,depthTest:true,depthWrite:false});
+visPlane=new THREE.Mesh(pg,pm);visPlane.position.copy(point);
+visPlane.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),normal);
+sc.add(visPlane);secMode="active";
+sec.style.background="rgba(239,68,68,0.7)";sec.style.color="white";
+s.textContent="Drag to move | Click Section to remove";
+}
+function removeSec(){
+r.clippingPlanes=[];if(visPlane){sc.remove(visPlane);visPlane.geometry.dispose();visPlane.material.dispose();visPlane=null;}
+clipPlane=null;secMode="off";secDrag=false;
+mg.traverse(c=>{if(c.material){const mats=Array.isArray(c.material)?c.material:[c.material];mats.forEach(m=>{m.side=THREE.FrontSide;m.needsUpdate=true})}});
+sec.style.background="rgba(239,68,68,0.2)";sec.style.color="#ef4444";
+s.textContent=mg.children.length+" elements";
+}
 
 const sc=new THREE.Scene();sc.background=new THREE.Color("#1a1a2e");
 const cam=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.001,1e9);
@@ -100,6 +123,7 @@ if(e.button!==0)return;
 const mouse=new THREE.Vector2((e.clientX/c.clientWidth)*2-1,-(e.clientY/c.clientHeight)*2+1);
 raycaster.setFromCamera(mouse,cam);
 const hits=raycaster.intersectObjects(mg.children,true);
+if(secMode==="pick"){if(hits.length>0){const p=hits[0].point.clone();const nm=new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld);const n=hits[0].face.normal.clone().applyMatrix3(nm).normalize();createSec(n,p);}return;}
 if(hits.length>0){
 clearHl();
 const mesh=hits[0].object;
@@ -129,8 +153,11 @@ panel.classList.remove("visible");
 s.textContent=mg.children.length+" elements";
 }
 });
+r.domElement.addEventListener("pointerdown",e=>{if(secMode!=="active")return;const mouse=new THREE.Vector2((e.clientX/c.clientWidth)*2-1,-(e.clientY/c.clientHeight)*2+1);const rc=new THREE.Raycaster();rc.setFromCamera(mouse,cam);if(rc.intersectObject(visPlane).length>0){secDrag=true;secLastY=e.clientY;ctrl.enabled=false;e.stopPropagation();}});
+r.domElement.addEventListener("pointermove",e=>{if(!secDrag||!clipPlane||!visPlane)return;const d=(secLastY-e.clientY)*cam.position.distanceTo(visPlane.position)*0.002;secLastY=e.clientY;clipPlane.constant+=d;visPlane.position.addScaledVector(clipPlane.normal.clone(),-d);});
+r.domElement.addEventListener("pointerup",()=>{secDrag=false;ctrl.enabled=true;});
 
-fi.onchange=async()=>{
+fi.onchange=async()=>{removeSec();
 const f=fi.files[0];if(!f)return;
 s.textContent="Uploading...";
 while(mg.children.length>0){const c=mg.children[0];mg.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)(Array.isArray(c.material)?c.material:[c.material]).forEach(m=>m.dispose());}
@@ -159,7 +186,7 @@ ctrl.target.set(0,0,0);
 cam.position.set(d*2, d*1.5, d*2);ctrl.update();
 grid.position.set(0,box.min.y-0.5,0);
 grid.scale.set(Math.max(d*1.5,20)/20,1,Math.max(d*1.5,20)/20);
-s.textContent=mg.children.length+" elements";buildCategories();exp.style.display="inline-block";
+s.textContent=mg.children.length+" elements";buildCategories();exp.style.display="inline-block";sec.style.display="inline-block";
 },undefined,(err)=>{s.textContent="Load error: "+err;});
 }catch(e){s.textContent="Error: "+e.message;}
 };
