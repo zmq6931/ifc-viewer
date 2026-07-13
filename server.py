@@ -307,22 +307,38 @@ def _compute_section(normal, point, offset):
     return np.vstack(lines)
 
 def _flatten_section_to_xy(lines, normal, origin):
-    """Project 3D section segments onto the section plane, then map to AutoCAD XY (Z=0)."""
+    """Project 3D section segments onto the section plane, then map to AutoCAD XY (Z=0).
+
+    Coordinate convention (matches looking at the cut from the kept / unclipped side):
+    - sheet +X  = right
+    - sheet +Y  = up
+    - sheet +Z  = 0 (all geometry flattened onto XY)
+    """
     n = np.array(normal, dtype=np.float64)
     nn = np.linalg.norm(n)
     n = n / nn if nn > 1e-12 else np.array([0.0, 0.0, 1.0])
     origin = np.array(origin, dtype=np.float64)
 
-    # Build a stable orthonormal basis on the plane.
-    # Prefer world +Y as "up" on the sheet so horizontal/vertical sections stay readable.
-    ref = np.array([0.0, 1.0, 0.0]) if abs(n[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    u = np.cross(ref, n)
+    # Prefer world +Y as sheet-up. For near-horizontal sections (plan), use world +Z.
+    up_ref = np.array([0.0, 1.0, 0.0]) if abs(n[1]) < 0.9 else np.array([0.0, 0.0, 1.0])
+    # Project up onto the plane, then build a right-handed basis for a viewer
+    # looking along -n (from kept side toward the cut face).
+    v = up_ref - n * np.dot(up_ref, n)
+    vn = np.linalg.norm(v)
+    if vn < 1e-12:
+        up_ref = np.array([1.0, 0.0, 0.0])
+        v = up_ref - n * np.dot(up_ref, n)
+        vn = np.linalg.norm(v)
+    v = v / vn
+    # right = up × look_back, look_back = n  =>  u = v × n
+    # Previous u = ref × n produced a left/right mirror in AutoCAD.
+    u = np.cross(v, n)
     un = np.linalg.norm(u)
     if un < 1e-12:
-        ref = np.array([0.0, 0.0, 1.0])
-        u = np.cross(ref, n)
-        un = np.linalg.norm(u)
-    u = u / un
+        u = np.array([1.0, 0.0, 0.0])
+    else:
+        u = u / un
+    # Re-orthogonalize v so (u, v, n) is orthonormal and right-handed.
     v = np.cross(n, u)
     v = v / np.linalg.norm(v)
 
@@ -330,8 +346,16 @@ def _flatten_section_to_xy(lines, normal, origin):
     for seg in lines:
         p0 = np.asarray(seg[0], dtype=np.float64) - origin
         p1 = np.asarray(seg[1], dtype=np.float64) - origin
-        a = (float(np.dot(p0, u)), float(np.dot(p0, v)), 0.0)
-        b = (float(np.dot(p1, u)), float(np.dot(p1, v)), 0.0)
+        # Local plane coords: (right, up)
+        # AutoCAD correction reported by user:
+        #   1) CCW 90° about Z:  (x, y) -> (-y, x)
+        #   2) 180° about N-S (Y): (x, y, z) -> (-x, y, -z)
+        #   3) 180° about Z: (x, y) -> (-x, -y)
+        # Combined on Z=0: (x, y) -> (-y, -x)
+        x0, y0 = float(np.dot(p0, u)), float(np.dot(p0, v))
+        x1, y1 = float(np.dot(p1, u)), float(np.dot(p1, v))
+        a = (-y0, -x0, 0.0)
+        b = (-y1, -x1, 0.0)
         flat.append((a, b))
     return flat
 
