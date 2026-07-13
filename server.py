@@ -1,6 +1,7 @@
-import http.server, os, tempfile, sys, json
+import http.server, os, tempfile, sys, json, io
+from urllib.parse import urlparse, parse_qs
 import ifcopenshell, ifcopenshell.geom
-import trimesh, numpy as np
+import trimesh, numpy as np, ezdxf
 
 HTML = r'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -44,6 +45,7 @@ body{font-family:system-ui,sans-serif;overflow:hidden;background:#1a1a2e}
 <span id="s">Ready</span>
 <button id="exp" style="display:none;padding:8px 16px;background:rgba(34,197,94,0.2);color:#22c55e;border:1px solid rgba(34,197,94,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Export XLSX</button>
 <button id="sec" style="display:none;padding:8px 16px;background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Section</button>
+<button id="dxf" style="display:none;padding:8px 12px;background:rgba(59,130,246,0.2);color:#3b82f6;border:1px solid rgba(59,130,246,0.3);border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">DXF</button>
 </div>
 <div id="tip">Wheel: zoom | Left drag: rotate | Right drag: pan | Click: select</div>
 <div id="catPanel"></div>
@@ -58,11 +60,11 @@ import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
 
 const E=id=>document.getElementById(id);
-const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel"),exp=E("exp"),sec=E("sec");
+const s=E("s"),btn=E("btn"),fi=E("f"),c=E("c"),panel=E("panel"),exp=E("exp"),sec=E("sec"),dxf=E("dxf");
 btn.onclick=()=>fi.click();
 exp.onclick=()=>{if(!window._ifcProps||!window._ifcProps.length)return;const keys=["Type","GlobalId","Name"];const extra=new Set();window._ifcProps.forEach(p=>Object.keys(p).forEach(k=>{if(k!=="Type"&&k!=="GlobalId"&&k!=="Name")extra.add(k)}));keys.push(...[...extra].sort());const rows=[keys];window._ifcProps.forEach(p=>rows.push(keys.map(k=>p[k]||"")));const ws=XLSX.utils.aoa_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"IFC Properties");XLSX.writeFile(wb,"ifc_properties.xlsx");};
 let secMode="off",clipPlane=null,visPlane=null,secDrag=false,secLastY=0;
-sec.onclick=()=>{if(secMode==="off"){secMode="pick";sec.style.background="rgba(239,68,68,0.5)";sec.style.color="#fca5a5";s.textContent="Click a face to set section plane"}else removeSec()};
+sec.onclick=()=>{if(secMode==="off"){secMode="pick";sec.style.background="rgba(239,68,68,0.5)";sec.style.color="#fca5a5";s.textContent="Click a face to set section plane"}else removeSec()};dxf.onclick=()=>{if(!clipPlane||!visPlane)return;const n=clipPlane.normal;const p=visPlane.position;const o=mg.position;const q=`nx=${n.x}&ny=${n.y}&nz=${n.z}&px=${p.x}&py=${p.y}&pz=${p.z}&ox=${o.x}&oy=${o.y}&oz=${o.z}`;const a=document.createElement("a");a.href="/section-dxf?"+q;a.download="section.dxf";a.click();};
 function createSec(normal,point){
 removeSec();
 clipPlane=new THREE.Plane(normal.clone().negate(),point.dot(normal));
@@ -73,14 +75,14 @@ const pg=new THREE.PlaneGeometry(sz,sz);const pm=new THREE.MeshBasicMaterial({co
 visPlane=new THREE.Mesh(pg,pm);visPlane.position.copy(point);
 visPlane.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),normal);
 sc.add(visPlane);secMode="active";
-sec.style.background="rgba(239,68,68,0.7)";sec.style.color="white";
+sec.style.background="rgba(239,68,68,0.7)";sec.style.color="white";dxf.style.display="inline-block";
 s.textContent="Drag to move | Click Section to remove";
 }
 function removeSec(){
 r.clippingPlanes=[];if(visPlane){sc.remove(visPlane);visPlane.geometry.dispose();visPlane.material.dispose();visPlane=null;}
 clipPlane=null;secMode="off";secDrag=false;
 mg.traverse(c=>{if(c.material){const mats=Array.isArray(c.material)?c.material:[c.material];mats.forEach(m=>{m.side=THREE.FrontSide;m.needsUpdate=true})}});
-sec.style.background="rgba(239,68,68,0.2)";sec.style.color="#ef4444";
+sec.style.background="rgba(239,68,68,0.2)";sec.style.color="#ef4444";dxf.style.display="none";
 s.textContent=mg.children.length+" elements";
 }
 
@@ -278,6 +280,7 @@ def ifc_to_glb(data):
             props_list.append(props)
         except:pass
     if not meshes:return None
+    global _last_meshes; _last_meshes = meshes
     # Export as scene with separate meshes
     scene=trimesh.Scene()
     for i,m in enumerate(meshes):
@@ -287,11 +290,78 @@ def ifc_to_glb(data):
     import base64
     return json.dumps({"glb":base64.b64encode(glb).decode(),"props":props_list}).encode()
 
+_last_meshes = []
+
+def _compute_section(normal, point, offset):
+    p = np.array(point, dtype=np.float64) - np.array(offset, dtype=np.float64)
+    n = np.array(normal, dtype=np.float64)
+    n = n / np.linalg.norm(n) if np.linalg.norm(n) > 0 else n
+    lines = []
+    for m in _last_meshes:
+        try:
+            segs = trimesh.intersections.mesh_plane(m, n, p)
+            if segs is not None and len(segs) > 0:
+                lines.append(segs)
+        except: pass
+    if not lines: return None
+    return np.vstack(lines)
+
+def _flatten_section_to_xy(lines, normal, origin):
+    """Project 3D section segments onto the section plane, then map to AutoCAD XY (Z=0)."""
+    n = np.array(normal, dtype=np.float64)
+    nn = np.linalg.norm(n)
+    n = n / nn if nn > 1e-12 else np.array([0.0, 0.0, 1.0])
+    origin = np.array(origin, dtype=np.float64)
+
+    # Build a stable orthonormal basis on the plane.
+    # Prefer world +Y as "up" on the sheet so horizontal/vertical sections stay readable.
+    ref = np.array([0.0, 1.0, 0.0]) if abs(n[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u = np.cross(ref, n)
+    un = np.linalg.norm(u)
+    if un < 1e-12:
+        ref = np.array([0.0, 0.0, 1.0])
+        u = np.cross(ref, n)
+        un = np.linalg.norm(u)
+    u = u / un
+    v = np.cross(n, u)
+    v = v / np.linalg.norm(v)
+
+    flat = []
+    for seg in lines:
+        p0 = np.asarray(seg[0], dtype=np.float64) - origin
+        p1 = np.asarray(seg[1], dtype=np.float64) - origin
+        a = (float(np.dot(p0, u)), float(np.dot(p0, v)), 0.0)
+        b = (float(np.dot(p1, u)), float(np.dot(p1, v)), 0.0)
+        flat.append((a, b))
+    return flat
+
 class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path=="/" or self.path=="/index.html":
             self.send_response(200);self.send_header("Content-Type","text/html; charset=utf-8");self.end_headers()
             self.wfile.write(HTML.encode())
+        elif self.path.startswith("/section-dxf"):
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+                nx = float(qs.get("nx",[0])[0]); ny = float(qs.get("ny",[0])[0]); nz = float(qs.get("nz",[0])[0])
+                px = float(qs.get("px",[0])[0]); py = float(qs.get("py",[0])[0]); pz = float(qs.get("pz",[0])[0])
+                ox = float(qs.get("ox",[0])[0]); oy = float(qs.get("oy",[0])[0]); oz = float(qs.get("oz",[0])[0])
+                lines = _compute_section((nx,ny,nz), (px,py,pz), (ox,oy,oz))
+                if lines is None: self.send_error(404); return
+                origin = np.array([px, py, pz], dtype=np.float64) - np.array([ox, oy, oz], dtype=np.float64)
+                flat = _flatten_section_to_xy(lines, (nx, ny, nz), origin)
+                doc = ezdxf.new(); msp = doc.modelspace()
+                for a, b in flat:
+                    msp.add_line(a, b)
+                buf = io.StringIO(); doc.write(buf); data = buf.getvalue().encode("utf-8")
+                self.send_response(200); self.send_header("Content-Type","application/octet-stream")
+                self.send_header("Content-Disposition","attachment; filename=section.dxf")
+                self.send_header("Content-Length",str(len(data))); self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self.send_response(500); self.send_header("Content-Type","text/plain"); self.end_headers()
+                self.wfile.write(str(e).encode())
         else:super().do_GET()
     def do_POST(self):
         if self.path=="/convert":
