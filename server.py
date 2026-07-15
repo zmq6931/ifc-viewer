@@ -65,6 +65,8 @@ body{font-family:system-ui,sans-serif;overflow:hidden;background:#1a1a2e}
 #treePanel .sub-eye.off{opacity:0.25}
 #treePanel .sub-sel{border:none;background:rgba(99,102,241,0.2);color:#a5b4fc;border-radius:3px;padding:1px 5px;font-size:9px;cursor:pointer}
 #treePanel .sub-sel:hover{background:rgba(99,102,241,0.5);color:white}
+#chartPanel{position:fixed;top:80px;right:320px;width:500px;max-height:calc(100vh-160px);background:rgba(26,26,46,0.92);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:8px;z-index:10;display:none}
+#chartPanel.visible{display:block}
 #logo{position:fixed;top:16px;left:20px;z-index:5;height:36px;pointer-events:none;opacity:0.8}
 </style></head>
 <body>
@@ -79,12 +81,15 @@ body{font-family:system-ui,sans-serif;overflow:hidden;background:#1a1a2e}
 <button id="exp" style="display:none;padding:8px 16px;background:rgba(34,197,94,0.2);color:#22c55e;border:1px solid rgba(34,197,94,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Export XLSX</button>
 <button id="sec" style="display:none;padding:8px 16px;background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">Section</button>
 <button id="dxf" style="display:none;padding:8px 12px;background:rgba(59,130,246,0.2);color:#3b82f6;border:1px solid rgba(59,130,246,0.3);border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">DXF</button>
+<button id="chartBtn" style="display:none;padding:8px 14px;background:rgba(139,92,246,0.2);color:#a78bfa;border:1px solid rgba(139,92,246,0.3);border-radius:10px;cursor:pointer;font-size:13px;font-weight:600">📊 Charts</button>
 </div>
 <div id="tip">Wheel: zoom | Left drag: rotate | Right drag: pan | Click: select</div>
 <div id="catPanel"></div>
 <div id="treePanel"></div>
 <div id="panel"></div>
+<div id="chartPanel"></div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
@@ -94,12 +99,13 @@ import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
 
 const E=id=>document.getElementById(id);
-const s=E("s"),btn=E("btn"),fi=E("f"),af=E("af"),appendBtn=E("appendBtn"),c=E("c"),panel=E("panel"),exp=E("exp"),sec=E("sec"),dxf=E("dxf");
+const s=E("s"),btn=E("btn"),fi=E("f"),af=E("af"),appendBtn=E("appendBtn"),c=E("c"),panel=E("panel"),exp=E("exp"),sec=E("sec"),dxf=E("dxf"),chartBtn=E("chartBtn"),chartPanel=E("chartPanel");
 btn.onclick=()=>{if(window._models&&window._models.length>0){location.reload();return}fi.click();};
 appendBtn.onclick=()=>af.click();
 exp.onclick=()=>{if(!window._ifcProps||!window._ifcProps.length)return;const keys=["Type","GlobalId","Name"];const extra=new Set();window._ifcProps.forEach(p=>Object.keys(p).forEach(k=>{if(k!=="Type"&&k!=="GlobalId"&&k!=="Name")extra.add(k)}));keys.push(...[...extra].sort());const rows=[keys];window._ifcProps.forEach(p=>rows.push(keys.map(k=>p[k]||"")));const ws=XLSX.utils.aoa_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"IFC Properties");XLSX.writeFile(wb,"ifc_properties.xlsx");};
 let secMode="off",clipPlane=null,visPlane=null,secDrag=false,secLastY=0;
 sec.onclick=()=>{if(secMode==="off"){secMode="pick";sec.style.background="rgba(239,68,68,0.5)";sec.style.color="#fca5a5";s.textContent="Click a face to set section plane"}else removeSec()};dxf.onclick=()=>{if(!clipPlane||!visPlane)return;const n=clipPlane.normal;const p=visPlane.position;const o=mg.position;const q=`nx=${n.x}&ny=${n.y}&nz=${n.z}&px=${p.x}&py=${p.y}&pz=${p.z}&ox=${o.x}&oy=${o.y}&oz=${o.z}`;const a=document.createElement("a");a.href="/section-dxf?"+q;a.download="section.dxf";a.click();};
+chartBtn.onclick=()=>showChart();
 function createSec(normal,point){
 removeSec();
 clipPlane=new THREE.Plane(normal.clone().negate(),point.dot(normal));
@@ -234,7 +240,7 @@ cam.position.set(d*2, d*1.5, d*2);ctrl.update();
 grid.position.set(0,box.min.y-0.5,0);
 grid.scale.set(Math.max(d*1.5,20)/20,1,Math.max(d*1.5,20)/20);
 }
-buildCategories();buildModelTree();appendBtn.style.display="inline-block";exp.style.display="inline-block";sec.style.display="inline-block";updateStatus();
+buildCategories();buildModelTree();appendBtn.style.display="inline-block";exp.style.display="inline-block";sec.style.display="inline-block";chartBtn.style.display="inline-block";updateStatus();
 resolve(mi);
 },undefined,(err)=>{s.textContent="Load error: "+err;reject(err)});});
 }
@@ -244,7 +250,7 @@ const f=fi.files[0];if(!f)return;
 s.textContent="Uploading...";
 clearHl();
 while(mg.children.length>0){const c=mg.children[0];mg.remove(c);disposeRecursive(c)}
-window._ifcProps=[];window._models=[];activeModelIndex=-1;panel.classList.remove("visible");E("catPanel").classList.remove("visible");E("treePanel").classList.remove("visible");
+window._ifcProps=[];window._models=[];activeModelIndex=-1;panel.classList.remove("visible");E("catPanel").classList.remove("visible");E("treePanel").classList.remove("visible");E("chartPanel").classList.remove("visible");
 try{const buf=await f.arrayBuffer();await loadModelData(buf,f.name,false)}catch(e){s.textContent="Error: "+e.message}
 fi.value="";
 };
@@ -406,6 +412,31 @@ if(typeof c.name==="string"&&c.name.startsWith("elem_")&&c.visible){hlMeshes.pus
 });
 panel.innerHTML='<h3>'+m.name+'</h3><div class="row"><span class="key">Elements</span><span class="val">'+m.propCount+'</span></div>';
 panel.classList.add("visible");
+}
+function showChart(){
+if(chartPanel.classList.contains("visible")){Plotly.purge(chartPanel);chartPanel.classList.remove("visible");return}
+if(!window._ifcProps||!window._ifcProps.length)return;
+const counts={};
+window._ifcProps.forEach(p=>{const t=p.Type||"Unknown";counts[t]=(counts[t]||0)+1});
+const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+const labels=entries.map(e=>e[0].replace("Ifc",""));
+const types=entries.map(e=>e[0]);
+const values=entries.map(e=>e[1]);
+const barColors=values.map((_,i)=>catCols[i%catCols.length]);
+const data=[{type:"bar",x:labels,y:values,marker:{color:barColors},text:values.map(v=>v.toString()),textposition:"outside",hoverinfo:"x+y"}];
+const layout={paper_bgcolor:"rgba(0,0,0,0)",plot_bgcolor:"rgba(0,0,0,0)",font:{color:"#c7d2fe",size:11},xaxis:{tickangle:-45,gridcolor:"rgba(255,255,255,0.05)",tickfont:{size:10}},yaxis:{title:"Count",gridcolor:"rgba(255,255,255,0.05)"},margin:{l:50,r:20,t:10,b:80},showlegend:false};
+Plotly.newPlot(chartPanel,data,layout,{responsive:true,displayModeBar:false});
+chartPanel.classList.add("visible");
+chartPanel.on("plotly_click",function(d){
+const idx=d.points[0].pointIndex;const cat=types[idx];clearHl();
+const m=window._models[activeModelIndex];
+if(m&&m.categories&&m.categories[cat]){
+const cd=m.categories[cat];
+cd.indices.forEach(i=>{const obj=mg.getObjectByName("elem_"+i);if(obj&&obj.visible){hlMeshes.push({m:obj,o:obj.material});obj.material=hlMat}});
+panel.innerHTML='<h3>'+cat.replace("Ifc","")+'</h3><div class="row"><span class="key">Count</span><span class="val">'+cd.indices.length+'</span></div>';
+panel.classList.add("visible");
+}
+});
 }
 (function a(){requestAnimationFrame(a);ctrl.update();r.render(sc,cam);})();
 window.addEventListener("resize",()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();r.setSize(innerWidth,innerHeight);});
