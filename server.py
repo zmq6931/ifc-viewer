@@ -460,7 +460,7 @@ def ifc_to_glb(data, append=False):
             faces=np.array(shape.geometry.faces,dtype=np.int32).reshape(-1,3)
             if len(verts)==0 or len(faces)==0:continue
             m=trimesh.Trimesh(vertices=verts,faces=faces,process=False)
-            R=np.array([[1,0,0],[0,0,-1],[0,1,0]],dtype=np.float64)
+            R=np.array([[1,0,0],[0,0,1],[0,-1,0]],dtype=np.float64)  # IFC Z-up -> glTF Y-up: rotateX(-90deg), +Z stays up
             m.apply_transform(np.vstack([np.hstack([R,np.zeros((3,1))]),[0,0,0,1]]))
             # Extract element properties
             props={"Type":elem.is_a(),"GlobalId":getattr(elem,"GlobalId",""),"Name":getattr(elem,"Name","") or ""}
